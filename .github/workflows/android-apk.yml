@@ -1,0 +1,50 @@
+name: Build installable Android APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/android-apk.yml'
+      - 'App.tsx'
+      - 'src/**'
+      - 'assets/**'
+      - 'app.json'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install dependencies
+        run: npm ci
+      - name: Check code
+        run: |
+          npx tsc --noEmit
+          npm run lint
+      - name: Generate native Android project
+        run: npx expo prebuild --platform android --no-install
+      - name: Build release APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+      - name: Copy APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk OMS-Parnu.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OMS-Parnu-Android-APK
+          path: OMS-Parnu.apk
+          if-no-files-found: error
