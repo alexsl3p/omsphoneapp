@@ -1,2 +1,6 @@
 import { Stack } from 'expo-router';
-export default function Layout() { return <Stack screenOptions={{ headerShown: false, animation: 'none' }}/>; }
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+
+export default function Layout() {
+  return <SafeAreaProvider><Stack screenOptions={{ headerShown: false, animation: 'none' }}/></SafeAreaProvider>;
+}
