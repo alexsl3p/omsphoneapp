@@ -1,0 +1,30 @@
+{
+  "expo": {
+    "name": "OMS Pärnu",
+    "slug": "omsphoneapp",
+    "scheme": "omsparnu",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "android": {
+      "package": "ee.omsparnu.phoneapp",
+      "adaptiveIcon": {
+        "backgroundColor": "#152B43",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      }
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "OMS Pärnu kasutab kaamerat taotlusele foto lisamiseks.",
+          "photosPermission": "OMS Pärnu kasutab fotosid taotlusele pildi lisamiseks.",
+          "microphonePermission": false
+        }
+      ],
+      "expo-router"
+    ]
+  }
+}
