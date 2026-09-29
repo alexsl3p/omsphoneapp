@@ -5,9 +5,9 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
-import { Directory, File, Paths } from 'expo-file-system';
 import Storage from 'expo-sqlite/kv-store';
 import { router } from 'expo-router';
+import { API_ORIGIN, clearApiKey, createApiTicket, listApiTickets, loadApiKey, saveApiKey, type ApiTicket } from './src/api';
 
 type Department = 'Spoonitöötlus' | 'Järeltöötlus' | 'Üldine';
 type Screen = 'form' | 'tickets' | 'settings';
@@ -15,7 +15,9 @@ type Form = {
   department: Department; process: string; title: string; description: string;
   photo: string | null; name: string; category: string; priority: string;
 };
-type Ticket = Form & { id: string; createdAt: string; status: 'Uus' };
+type Ticket = Omit<Form, 'department'> & {
+  department: string; id: string; createdAt: string; status: string; reference?: string; remote?: boolean;
+};
 type FieldKey = 'department' | 'process' | 'category' | 'priority';
 
 const choices: Record<Department, string[]> = {
@@ -47,10 +49,28 @@ function dateTime(iso: string) {
   });
 }
 
+function message(cause: unknown) {
+  return cause instanceof Error ? cause.message : 'Ühendus ebaõnnestus. Proovi uuesti.';
+}
+
+function fromApiTicket(row: ApiTicket): Ticket {
+  return {
+    id: `sim-${row.id}`, reference: `SIM-${String(row.id).padStart(6, '0')}`, remote: true,
+    createdAt: row.createdAt, status: row.status, title: row.title,
+    description: row.description, department: row.department, process: row.process,
+    name: row.reporter, priority: row.priority, category: row.details?.messageCategory || '', photo: null,
+  };
+}
+
 export default function OMSApp({ screen }: { screen: Screen }) {
   const insets = useSafeAreaInsets();
   const [form, setForm] = useState<Form>(initial);
   const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [remoteTickets, setRemoteTickets] = useState<Ticket[]>([]);
+  const [apiKey, setApiKey] = useState<string | null>(null);
+  const [keyDraft, setKeyDraft] = useState('');
+  const [apiError, setApiError] = useState('');
+  const [connecting, setConnecting] = useState(false);
   const [picker, setPicker] = useState<FieldKey | null>(null);
   const [selected, setSelected] = useState<Ticket | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -58,11 +78,42 @@ export default function OMSApp({ screen }: { screen: Screen }) {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    Storage.getItem(STORAGE_KEY)
-      .then(value => { if (value) setTickets(JSON.parse(value) as Ticket[]); })
-      .catch(() => setError('Salvestatud taotlusi ei õnnestunud laadida.'))
-      .finally(() => setLoaded(true));
-  }, []);
+    let active = true;
+    Promise.all([Storage.getItem(STORAGE_KEY), loadApiKey()]).then(async ([local, key]) => {
+      if (!active) return;
+      if (local) setTickets(JSON.parse(local) as Ticket[]);
+      setApiKey(key);
+      setKeyDraft(key || '');
+      if (key) {
+        try {
+          const rows = await listApiTickets(key);
+          if (active) setRemoteTickets(rows.map(fromApiTicket));
+        } catch (cause) { if (active) setApiError(message(cause)); }
+      }
+    }).catch(() => { if (active) setApiError('Andmeid ei õnnestunud laadida.'); })
+      .finally(() => { if (active) setLoaded(true); });
+    return () => { active = false; };
+  }, [screen]);
+
+  const visibleTickets = [...remoteTickets, ...tickets];
+
+  const connect = async () => {
+    const key = keyDraft.trim();
+    if (!key) { setApiError('Sisesta API võti.'); return; }
+    setConnecting(true); setApiError('');
+    try {
+      await saveApiKey(key);
+      setApiKey(key);
+      const rows = await listApiTickets(key);
+      setRemoteTickets(rows.map(fromApiTicket));
+      Alert.alert('Ühendatud', 'OMS simulatsiooni API töötab.');
+    } catch (cause) { setApiError(message(cause)); }
+    finally { setConnecting(false); }
+  };
+
+  const disconnect = async () => {
+    await clearApiKey(); setApiKey(null); setKeyDraft(''); setRemoteTickets([]); setApiError('');
+  };
 
   const set = <K extends keyof Form>(key: K, value: Form[K]) => {
     setForm(current => ({ ...current, [key]: value }));
@@ -101,35 +152,27 @@ export default function OMSApp({ screen }: { screen: Screen }) {
 
   const save = async () => {
     if (!loaded || saving) return;
+    if (!apiKey) { setError('Ühenda OMS simulatsiooni API seadetes.'); return; }
     if (!form.department || !form.process || !form.title.trim() || !form.description.trim()
       || !form.name.trim() || !form.category || !form.priority) {
       setError('Täida kõik kohustuslikud väljad.');
       return;
     }
     setSaving(true); setError('');
-    let copiedPhoto: File | null = null;
     try {
-      if (form.photo) {
-        const dir = new Directory(Paths.document, 'oms-photos');
-        if (!dir.exists) dir.create();
-        const extension = form.photo.split('?')[0].match(/\.(png|jpe?g|webp|heic)$/i)?.[1]?.toLowerCase() ?? 'jpg';
-        copiedPhoto = new File(dir, `${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`);
-        new File(form.photo).copy(copiedPhoto);
-      }
-      const ticket: Ticket = {
-        ...form, title: form.title.trim(), description: form.description.trim(), name: form.name.trim(),
-        photo: copiedPhoto?.uri ?? null, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        createdAt: new Date().toISOString(), status: 'Uus',
-      };
-      const next = [ticket, ...tickets];
-      await Storage.setItem(STORAGE_KEY, JSON.stringify(next));
-      setTickets(next);
+      const saved = await createApiTicket(apiKey, {
+        title: form.title.trim(), description: form.description.trim(),
+        department: form.department === 'Spoonitöötlus' ? 'Spooni töötlemine' : form.department,
+        process: form.process, reporter: form.name.trim(), priority: form.priority,
+        messageCategory: form.category, notificationCategory: 'Notification | M1 - Maintenance Request',
+        plant: 'Pärnu', factory: 'MWBU - Pärnu Tehas', sapCode: 'PNU',
+        sapName: 'PNU - Pärnu kasevineeritehas', status: 'Open',
+      }, form.photo);
       setForm(current => ({ ...initial, name: current.name }));
       router.replace('/tickets');
-      Alert.alert('Taotlus salvestatud', 'Taotlus on salvestatud sellesse telefoni.');
-    } catch {
-      try { copiedPhoto?.delete(); } catch { /* No copied photo to remove. */ }
-      setError('Salvestamine ebaõnnestus. Proovi uuesti.');
+      Alert.alert('Teatis salvestatud', `${saved.reference} on loodud OMS simulatsioonis.`);
+    } catch (cause) {
+      setError(message(cause));
     } finally { setSaving(false); }
   };
 
@@ -169,6 +212,9 @@ export default function OMSApp({ screen }: { screen: Screen }) {
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.scroll}>
           <Text style={styles.heading}>Uus taotlus</Text>
           <Text style={styles.intro}>Kirjelda probleemi ja salvesta taotlus.</Text>
+          {!apiKey && loaded ? <Pressable onPress={() => router.replace('/settings')} style={styles.connectionNotice}>
+            <Text style={styles.connectionNoticeText}>Ühenda API seadetes, et saata teatis OMS simulatsiooni.</Text>
+          </Pressable> : null}
           <View style={styles.card}>
             <Text style={styles.section}>ASUKOHT</Text>
             {field('Osakond', 'department')}
@@ -213,26 +259,43 @@ export default function OMSApp({ screen }: { screen: Screen }) {
               <Text style={styles.saveText}>{saving ? 'SALVESTAN…' : 'SALVESTA TAOTLUS'}</Text>
             </Pressable>
           </View>
-          <Text style={styles.caption}>Taotlus salvestatakse ainult sellesse telefoni. Ühendus töö-OMSiga puudub.</Text>
+          <Text style={styles.caption}>Uued teatised salvestatakse OMS simulatsiooni. Ühendus töö-OMSiga puudub.</Text>
         </ScrollView>
       </KeyboardAvoidingView> : screen === 'tickets' ? <ScrollView contentContainerStyle={styles.scroll}>
         <Text style={styles.heading}>Taotlused</Text>
-        <Text style={styles.intro}>{tickets.length ? `${tickets.length} kohalikult salvestatud taotlust` : 'Siin kuvatakse sinu loodud taotlused.'}</Text>
-        {tickets.length === 0 ? <View style={styles.empty}><Text style={styles.emptyIcon}>▤</Text>
+        <Text style={styles.intro}>{remoteTickets.length} simulatsioonis · {tickets.length} varasemat telefonis</Text>
+        {apiError ? <Text accessibilityRole="alert" style={styles.error}>{apiError}</Text> : null}
+        {!apiKey && loaded ? <Pressable onPress={() => router.replace('/settings')} style={styles.connectionNotice}>
+          <Text style={styles.connectionNoticeText}>Ühenda API, et näha simulatsiooni teatisi.</Text>
+        </Pressable> : null}
+        {visibleTickets.length === 0 ? <View style={styles.empty}><Text style={styles.emptyIcon}>▤</Text>
           <Text style={styles.emptyTitle}>Taotlusi veel ei ole</Text><Text style={styles.emptyText}>Loo esimene hooldustaotlus.</Text>
           <Pressable onPress={() => router.replace('/')} style={styles.emptyButton}><Text style={styles.emptyButtonText}>Uus taotlus</Text></Pressable>
-        </View> : tickets.map(ticket => <Pressable accessibilityRole="button" key={ticket.id} onPress={() => setSelected(ticket)} style={styles.ticket}>
-          <View style={styles.ticketTop}><Text style={styles.ticketTime}>{dateTime(ticket.createdAt)}</Text><Text style={styles.ticketStatus}>{ticket.status}</Text></View>
+        </View> : visibleTickets.map(ticket => <Pressable accessibilityRole="button" key={ticket.id} onPress={() => setSelected(ticket)} style={styles.ticket}>
+          <View style={styles.ticketTop}><Text style={styles.ticketTime}>{dateTime(ticket.createdAt)}</Text><Text style={styles.ticketStatus}>{ticket.remote ? ticket.reference : 'Kohalik'}</Text></View>
           <Text style={styles.ticketTitle}>{ticket.title}</Text><Text style={styles.ticketMeta}>{ticket.department} · {ticket.process}</Text>
           <Text style={styles.ticketDescription} numberOfLines={2}>{ticket.description}</Text>
-          <View style={styles.ticketFoot}><Text style={styles.ticketPriority}>{ticket.priority}</Text>{ticket.photo ? <Text style={styles.ticketPhoto}>Foto lisatud</Text> : null}</View>
+          <View style={styles.ticketFoot}><Text style={styles.ticketPriority}>{ticket.priority} · {ticket.status}</Text>{ticket.photo ? <Text style={styles.ticketPhoto}>Foto lisatud</Text> : null}</View>
         </Pressable>)}
       </ScrollView> : <ScrollView contentContainerStyle={styles.scroll}>
-        <Text style={styles.heading}>Seaded</Text><Text style={styles.intro}>Rakenduse teave</Text>
-        <View style={styles.card}><Text style={styles.settingsLabel}>Kasutaja</Text><Text style={styles.settingsValue}>Slepko Aleksander</Text>
-          <View style={styles.rule} /><Text style={styles.settingsLabel}>Versioon</Text><Text style={styles.settingsValue}>1.0.2</Text>
-          <View style={styles.rule} /><Text style={styles.settingsLabel}>Salvestamine</Text>
-          <Text style={styles.settingsValue}>Taotlused salvestatakse ainult sellesse telefoni. Ühendus töö-OMSiga puudub.</Text>
+        <Text style={styles.heading}>Seaded</Text><Text style={styles.intro}>OMS simulatsiooni ühendus</Text>
+        <View style={styles.card}>
+          <Text style={styles.settingsLabel}>API aadress</Text><Text selectable style={styles.settingsValue}>{API_ORIGIN}</Text>
+          <View style={styles.rule} />
+          <Text style={styles.settingsLabel}>API võti</Text>
+          <TextInput value={keyDraft} onChangeText={setKeyDraft} placeholder="Sisesta API võti"
+            placeholderTextColor={colors.placeholder} autoCapitalize="none" autoCorrect={false}
+            secureTextEntry style={styles.input} />
+          <Text style={styles.keyHint}>Võti salvestatakse selle telefoni turvalisse salvestusruumi.</Text>
+          {apiError ? <Text accessibilityRole="alert" style={styles.error}>{apiError}</Text> : null}
+          <Pressable onPress={connect} disabled={connecting || !loaded} style={[styles.save, (connecting || !loaded) && styles.disabled]}>
+            <Text style={styles.saveText}>{connecting ? 'ÜHENDAN…' : 'ÜHENDA JA KONTROLLI'}</Text>
+          </Pressable>
+          {apiKey ? <Pressable onPress={disconnect} style={styles.disconnect}><Text style={styles.disconnectText}>Eemalda võti telefonist</Text></Pressable> : null}
+          <View style={styles.rule} />
+          <Text style={styles.settingsLabel}>Versioon</Text><Text style={styles.settingsValue}>1.0.3</Text>
+          <Text style={styles.settingsLabel}>Andmed</Text>
+          <Text style={styles.settingsValue}>Uued teatised salvestatakse OMS simulatsiooni. Varasemad kohalikud teatised jäävad telefoni. Ühendus töö-OMSiga puudub.</Text>
         </View>
       </ScrollView>}
     </View>
@@ -242,7 +305,7 @@ export default function OMSApp({ screen }: { screen: Screen }) {
     }]}>
       <View style={styles.tabs}>
         {tab('form', '✚', 'Uus taotlus', '/')}
-        {tab('tickets', '☷', `Taotlused (${tickets.length})`, '/tickets')}
+        {tab('tickets', '☷', `Taotlused (${visibleTickets.length})`, '/tickets')}
         {tab('settings', '⚙', 'Seaded', '/settings')}
       </View>
     </SafeAreaView>
@@ -263,7 +326,7 @@ export default function OMSApp({ screen }: { screen: Screen }) {
     <Modal transparent visible={selected !== null} animationType="slide" onRequestClose={() => setSelected(null)}>
       <View style={styles.detailOverlay}><ScrollView style={styles.detailSheet} contentContainerStyle={[styles.detailContent, { paddingBottom: bottomInset + 42 }]}>
         <Pressable onPress={() => setSelected(null)} style={styles.close}><Text style={styles.closeText}>Sulge ×</Text></Pressable>
-        {selected ? <><Text style={styles.detailEyebrow}>{dateTime(selected.createdAt)} · {selected.status}</Text>
+        {selected ? <><Text style={styles.detailEyebrow}>{selected.reference || 'Kohalik'} · {dateTime(selected.createdAt)} · {selected.status}</Text>
           <Text style={styles.detailTitle}>{selected.title}</Text><Text style={styles.detailBody}>{selected.description}</Text>
           {selected.photo ? <Image source={{ uri: selected.photo }} style={styles.detailPhoto} resizeMode="contain" /> : null}
           {([['Osakond', selected.department], ['Protsess', selected.process], ['Nimi', selected.name],
@@ -317,6 +380,8 @@ const styles = StyleSheet.create({
   save: { minHeight: 50, borderRadius: 7, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center', marginTop: 2 },
   disabled: { opacity: 0.55 }, saveText: { color: 'white', fontSize: 14, fontWeight: '800', letterSpacing: 0.3 },
   caption: { textAlign: 'center', color: colors.muted, fontSize: 11, lineHeight: 16, marginTop: 12, paddingHorizontal: 8 },
+  connectionNotice: { borderRadius: 8, backgroundColor: '#EDF7E8', padding: 12, marginBottom: 14 },
+  connectionNoticeText: { color: colors.greenDark, fontSize: 13, fontWeight: '700' },
   tabSafeArea: { backgroundColor: 'white' },
   tabs: { flexDirection: 'row', borderTopWidth: 1, borderColor: colors.border, minHeight: 56 },
   tab: { flex: 1, borderTopWidth: 2, borderTopColor: 'transparent', alignItems: 'center', justifyContent: 'center',
@@ -340,6 +405,9 @@ const styles = StyleSheet.create({
   ticketPhoto: { color: colors.greenDark, fontSize: 12, fontWeight: '700' },
   settingsLabel: { color: colors.muted, fontSize: 12, fontWeight: '700', marginBottom: 5 },
   settingsValue: { color: colors.ink, fontSize: 15, lineHeight: 22, marginBottom: 16 },
+  keyHint: { color: colors.muted, fontSize: 12, lineHeight: 17, marginTop: 8, marginBottom: 14 },
+  disconnect: { alignItems: 'center', padding: 13 },
+  disconnectText: { color: '#B4483D', fontSize: 13, fontWeight: '700' },
   overlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#1C2735A8' },
   sheet: { maxHeight: '85%', backgroundColor: 'white', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20 },
   sheetTitle: { color: colors.ink, fontSize: 20, fontWeight: '800', marginBottom: 12 }, optionList: { flexShrink: 1 },
