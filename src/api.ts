@@ -2,7 +2,7 @@ import { fetch as expoFetch } from 'expo/fetch';
 import { File } from 'expo-file-system';
 import * as SecureStore from 'expo-secure-store';
 
-export const API_ORIGIN = 'https://omssimulation.alexsl3p.chatgpt.site';
+export const API_ORIGIN = 'https://oms.alexsl3p.chatgpt.site';
 const KEY_NAME = 'oms_simulation_api_key';
 
 export type ApiTicket = {

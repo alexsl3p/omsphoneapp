@@ -3,13 +3,13 @@
     "name": "OMS Pärnu",
     "slug": "omsphoneapp",
     "scheme": "omsparnu",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "android": {
       "package": "ee.omsparnu.phoneapp",
-      "versionCode": 4,
+      "versionCode": 5,
       "adaptiveIcon": {
         "backgroundColor": "#FFFFFF",
         "foregroundImage": "./assets/android-icon-foreground.png",

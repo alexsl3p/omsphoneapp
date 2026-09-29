@@ -102,10 +102,11 @@ export default function OMSApp({ screen }: { screen: Screen }) {
     if (!key) { setApiError('Sisesta API võti.'); return; }
     setConnecting(true); setApiError('');
     try {
+      const rows = await listApiTickets(key);
       await saveApiKey(key);
       setApiKey(key);
-      const rows = await listApiTickets(key);
       setRemoteTickets(rows.map(fromApiTicket));
+      setApiError('');
       Alert.alert('Ühendatud', 'OMS simulatsiooni API töötab.');
     } catch (cause) { setApiError(message(cause)); }
     finally { setConnecting(false); }
@@ -293,7 +294,7 @@ export default function OMSApp({ screen }: { screen: Screen }) {
           </Pressable>
           {apiKey ? <Pressable onPress={disconnect} style={styles.disconnect}><Text style={styles.disconnectText}>Eemalda võti telefonist</Text></Pressable> : null}
           <View style={styles.rule} />
-          <Text style={styles.settingsLabel}>Versioon</Text><Text style={styles.settingsValue}>1.0.3</Text>
+          <Text style={styles.settingsLabel}>Versioon</Text><Text style={styles.settingsValue}>1.0.4</Text>
           <Text style={styles.settingsLabel}>Andmed</Text>
           <Text style={styles.settingsValue}>Uued teatised salvestatakse OMS simulatsiooni. Varasemad kohalikud teatised jäävad telefoni. Ühendus töö-OMSiga puudub.</Text>
         </View>
